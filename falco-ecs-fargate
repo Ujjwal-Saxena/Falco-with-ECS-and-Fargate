@@ -1,0 +1,126 @@
+
+This document defines steps to integrate Falco with ECS having Fargate containers.
+
+Introduction:
+=============
+Falco is an open source standard for real-time detection of threats and anomalies across containers, Kubernetes, and other cloud services. It is Kubernetes runtime security tool. Falco detects abnormal application behaviour and alerts on intrusions for containers and cloud-native applications.
+
+Together with Falco, FireLens collects logs across all AWS services (EKS,ECS, EC2) and facilitates the centralization of all security events, which enables cluster operations, incident response, DevOps, and security teams to spend less time wading through data, enabling them to draw conclusions about security risks faster.
+Falco works by analyzing kernel system calls to provide deep visibility into container, host, and cluster activity. It also taps into other data sources, such as Kubernetes API audit events. In the event of abnormal behavior, Falco will generate security events defined by a customizable set of rules. For more information, kindly refer the official documentation. 
+For implementing Falco for EC2 workloads, kindly refer document integrating Falco with ECS and EKS using EC2 workloads.
+
+This document defines the process of integrating Falco for Fargate containers in ECS.   STEPS:
+
+STEP-1 =>  Firstly, setup an environment by running below commands in local terminal:
+```````````
+>> git clone https://github.com/aws-samples/aws-securityhub-falco-ecs-eks-integration>> python3 -m venv .venv>> source .venv/bin/activate>> pip install -r requirements.txt>> cdk synth
+```````````
+
+STEP-2 =>  Create required IAM policy: 
+[+]  In IAM Console => Create Policy.  
+[+]  Select “JSON” section and include below context:
+```````````
+{    
+      "Version": "2012-10-17",   
+      "Statement": [        
+      {
+          "Effect": "Allow",            
+          "Action": [                
+                "ssmmessages:CreateControlChannel",            
+                "ssmmessages:CreateDataChannel",                
+                "ssmmessages:OpenControlChannel",                
+                "ssmmessages:OpenDataChannel"            
+        ],
+          "Resource": "*"
+    },
+    {
+        "Effect": "Allow",             
+        "Action": [
+              "logs:DescribeLogGroups"
+        ],
+        "Resource": "*"
+    },
+    {
+        "Effect": "Allow",
+        "Action": [
+                  "logs:CreateLogStream",
+                  "logs:DescribeLogStreams",
+                  "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:us-east-1:12312xxx232123:log-group:/aws/ecs/ecsfargate:*"
+    }
+  ]
+}
+`````````````
+
+[+]  Save policy with name " ecsfargatetask_role" and then create policy.  
+
+STEP-3 =>  Create an IAM Role and attach IAM policy to it: 
+[+]  In IAM Console => Navigate to "Roles" section  => Create Role => Select "AWS Service". 
+[+]  Under Use case section => Search “Elastic Container Service” => Select “Elastic Container Service Task”. 
+[+]  Select policy “ecsfargatetask_role”. [+] Enter Name  " EcsFargate_taskrole"   
+
+STEP-4 =>  Check if ECS task execution role ("ecsTaskExecutionRole") pre-exists.   
+
+STEP-5 =>  Create an ECS Fargate cluster via AWS Management Console.   
+
+STEP-6 =>  Create task definition file as JSON using below script:
+`````````
+{
+  "family": "falco-trace",
+  "containerDefinitions": [
+  {
+    "name": "falco-trace",
+    "image": "registry.hub.docker.com/krisnova/falco-trace:latest",            "cpu": 0,            "portMappings": [                {                    "containerPort": 443,                    "hostPort": 443,                    "protocol": "tcp"                }            ],            "essential": true,            "environment": [],            "mountPoints": [],            "volumesFrom": [],            "linuxParameters": {                "capabilities": {                    "add": [                        "SYS_PTRACE"                    ]                }            },            "logConfiguration": {                "logDriver": "awslogs",                "options": {                    "awslogs-group": "/ecs/fargate-latest",                    "awslogs-region": "us-east-1",                    "awslogs-stream-prefix": "ecs"                }            }        }    ],    "taskRoleArn": "arn:aws:iam::12312xxx232123:role/EcsFargate_taskrole",    "executionRoleArn": "arn:aws:iam::12312xxx232123:role/ecsTaskExecutionRole",    "networkMode": "awsvpc",    "requiresCompatibilities": [        "FARGATE"    ],    "cpu": "1024",    "memory": "4096"} 
+
+```````````
+
+STEP-7 =>  Create Log group for fargate container logs as mentioned in above task definition file using below steps: 
+[+]  Navigate to Cloudwatch dashboard. 
+[+]  In left Navigation => Select Log groups => Create Log group. 
+[+]  Mention name as “fargate-latest” (This name is specified in task definition)   
+
+STEP-8 =>  Then, create a service using above task definition without launching any task (i.e Set Desired Running Task =0 ).
+
+STEP-9 =>  Then, switch to the local terminal and update the ECS service and container agent using below command :
+```
+> aws ecs update-service --cluster ecsfargate --task-definition falco-trace:4 --enable-execute-command --service fargate-falco-ptrace --desired-count 1 # Press “q” to exit.
+```
+
+ 
+STEP-10 =>  Then, navigate to ECS Cluster console and update ECS service to launch 1 fargate task (i.e Set Desired Running Task =1 ).
+ 
+STEP-11 =>  Once the task is up and running, navigate to local terminal and exec into the fargate container using below steps:
+
+```
+> aws ecs execute-command --cluster ecsfargate --task arn:aws:ecs:us-east-1:12312xxx232123:task/ecsfargate/b687cb5ca70c45448839eea4688d9988 --container falco-trace --interactive --command "/bin/sh"The Session Manager plugin was installed successfully. Use the AWS CLI to start a session. Starting session with SessionId: ecs-execute-command-06e108809ad2c0f16>> lsbin   dev  falco-trace    lib    managed-agents  mnt  proc  run   srv  tmp  varboot  etc  home                        lib64  media            opt  root  sbin        sys  usr >> touch tesst.txt>> echo "hello there" > tesst.txt>> cat tesst.txt hello there
+```
+
+ 
+Logs Collection:
+-----------------
+The logs of ECS Fargate container will be visible in cloud watch log group ("fargate-cluster").
+
+STEPS:
+------
+
+
+1.   Open the CloudWatch console.
+
+
+2.   From the navigation bar, choose the Region where Amazon ECS cluster is located.
+
+
+3.   In the left navigation pane, choose Logs and then select Log groups.
+
+
+4.   Select “log stream”  where destination logs were specified in task definition file.
+
+=> Hence, in this way you will be able to find all the latest logs of ECS Fargate containers with real time anomaly detection using Falco.
+
+Related Items:
+==============
+link https://www.youtube.com/watch?v=OYGKjmFeLqI&t=2955s
+link https://github.com/paavan98pm/ecs-fargate-pv1.4-falco
+link https://docs.aws.amazon.com/AmazonECS/latest/bestpracticesguide/security-fargate.html#security-fargate-syscall-tracing
+link https://sysdig.com/blog/falco-support-on-aws-fargate/
